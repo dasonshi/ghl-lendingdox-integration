@@ -1,18 +1,14 @@
+// server.js
 const express = require('express');
 const app = express();
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Health check route
-app.get('/health', (req, res) => {
-  res.send('Integration Server Running ✅');
+app.get('/', (req, res) => {
+  res.send('GHL-LendingDox Integration Server is Running!');
 });
 
-// Temporary endpoint to test webhook
-app.post('/webhook/lendingdox', (req, res) => {
-  console.log('Received LendingDox payload:', req.body);
-  res.send('Received ✅');
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
