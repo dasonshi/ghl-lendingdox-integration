@@ -408,6 +408,11 @@ async function pollLendingDox() {
     
 if (loanCount > 0) {
   for (const loan of loanChanges.loans || []) {
+    // Skip loans without email
+if (!loan.borrower?.contacts?.email) {
+  console.log(`⚠️ Skipping loan ${loan.loanId} - no borrower email`);
+  continue;
+}
     const payload = {
       loanId: loan.loanId,
       name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
