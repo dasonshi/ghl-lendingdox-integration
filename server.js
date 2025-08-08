@@ -35,7 +35,15 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     const bodyHash = req.body ? require('crypto').createHash('md5').update(JSON.stringify(req.body)).digest('hex').substring(0, 8) : 'none';
     
-    console.log(`📊 ${req.method} ${req.path} ${res.statusCode} ${duration}ms [body:${bodyHash}] [ip:${req.ip}]`);
+    // Smart logging: Always log API calls, only log health checks if slow/failed
+    const shouldLog = req.path !== '/health' && req.path !== '/' || // Always log non-health
+                     res.statusCode >= 400 ||                        // Always log errors
+                     duration > 1000;                                // Always log slow requests (>1s)
+    
+    if (shouldLog) {
+      const logLevel = res.statusCode >= 400 ? '🚨' : duration > 500 ? '⚠️' : '📊';
+      console.log(`${logLevel} ${req.method} ${req.path} ${res.statusCode} ${duration}ms [body:${bodyHash}] [ip:${req.ip}]`);
+    }
     
     // Call original send
     originalSend.call(this, data);
@@ -90,7 +98,7 @@ function rateLimit(windowMs = 15 * 60 * 1000, maxRequests = 100) {
   };
 }
 
-// Apply rate limiting to API routes
+// Apply rate limiting to API routes (exclude health checks)
 app.use('/api/', rateLimit(15 * 60 * 1000, 100)); // 100 requests per 15 minutes
 
 // Add support for both JSON and form-encoded data
