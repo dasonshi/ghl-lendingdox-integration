@@ -406,22 +406,32 @@ async function pollLendingDox() {
     const loanCount = Array.isArray(loanChanges?.loans) ? loanChanges.loans.length : 0;
     console.log(`📊 Loan changes received: ${loanCount}`);
     
-    if (loanCount > 0) {
-      for (const loan of loanChanges.loans || []) {
-        const payload = {
-          loanId: loan.loanId || loan.id || loan.LoanId || loan.LoanID,
-          name: loan.borrowerName ? `Loan – ${loan.borrowerName}` : `Loan – ${loan.loanId || 'Unknown'}`,
-          value: loan.amount || loan.loanAmount,
-          contactEmail: loan.email || loan.borrowerEmail,
-          contactFirstName: loan.borrowerFirstName || loan.firstName,
-          contactLastName: loan.borrowerLastName || loan.lastName,
-          customFields: {
-            loanStatus: loan.status || loan.loanStatus,
-            interestRate: loan.interestRate,
-            loanType: loan.loanType,
-            submissionDate: loan.submissionDate || loan.createdDate
-          }
-        };
+if (loanCount > 0) {
+  for (const loan of loanChanges.loans || []) {
+    const payload = {
+      loanId: loan.loanId,
+      name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+      value: parseInt(loan.loanAmount) || 100000,
+      
+      // Extract from nested borrower object
+      contactEmail: loan.borrower?.contacts?.email,
+      contactFirstName: loan.borrower?.firstName,
+      contactLastName: loan.borrower?.lastName,
+      contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
+      
+      customFields: {
+        loanNumber: loan.loanNumber,
+        loanStatus: loan.loanStatus?.name,
+        loanType: loan.loanType?.name,
+        loanOfficer: loan.loanOfficer,
+        purpose: loan.purpose?.name,
+        occupancy: loan.occupancy?.name,
+        creditScore: loan.creditScore,
+        noteRate: loan.noteRate,
+        program: loan.program,
+        lender: loan.lender
+      }
+    };
         
 try {
   // FIXED: Call function directly
