@@ -424,10 +424,9 @@ async function pollLendingDox() {
         };
         
         try {
-          const response = await axios.post(`http://localhost:${PORT}/api/opportunity`, payload, { 
-            timeout: 15000,
-            headers: { 'Content-Type': 'application/json' }
-          });
+          c// FIXED: Call function directly
+await upsertOpportunityFromPayload(payload);
+
           console.log(`✅ Upserted opportunity for loanId: ${payload.loanId}`);
         } catch (err) {
           console.error('❌ Error posting to /api/opportunity:', err?.response?.data || err.message);
