@@ -1,5 +1,10 @@
-// Load environment variables from .env
-require('dotenv').config();
+// Only load .env in development - Render provides env vars directly  
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+} else {
+  // In production, variables are provided by Render directly
+  console.log('🏭 Running in production mode - using Render environment variables');
+}
 
 // Validate required environment variables
 const REQUIRED_ENV = ['GHL_LOCATION_ID', 'GHL_CLIENT_ID', 'GHL_CLIENT_SECRET'];
