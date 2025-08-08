@@ -25,6 +25,74 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 
+// ---------------- Request Logging Middleware ----------------
+app.use((req, res, next) => {
+  const start = Date.now();
+  const originalSend = res.send;
+  
+  // Override res.send to capture response
+  res.send = function(data) {
+    const duration = Date.now() - start;
+    const bodyHash = req.body ? require('crypto').createHash('md5').update(JSON.stringify(req.body)).digest('hex').substring(0, 8) : 'none';
+    
+    console.log(`📊 ${req.method} ${req.path} ${res.statusCode} ${duration}ms [body:${bodyHash}] [ip:${req.ip}]`);
+    
+    // Call original send
+    originalSend.call(this, data);
+  };
+  
+  next();
+});
+
+// ---------------- Rate Limiting ----------------
+const rateLimitStore = new Map();
+
+function rateLimit(windowMs = 15 * 60 * 1000, maxRequests = 100) {
+  return (req, res, next) => {
+    const clientId = req.ip || 'unknown';
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    
+    // Clean old entries
+    for (const [key, timestamps] of rateLimitStore.entries()) {
+      rateLimitStore.set(key, timestamps.filter(t => t > windowStart));
+      if (rateLimitStore.get(key).length === 0) {
+        rateLimitStore.delete(key);
+      }
+    }
+    
+    // Get current requests for this client
+    const clientRequests = rateLimitStore.get(clientId) || [];
+    const recentRequests = clientRequests.filter(t => t > windowStart);
+    
+    if (recentRequests.length >= maxRequests) {
+      console.log(`🚫 Rate limit exceeded for ${clientId}: ${recentRequests.length}/${maxRequests} requests`);
+      return res.status(429).json({ 
+        error: 'Too many requests', 
+        retryAfter: Math.ceil(windowMs / 1000),
+        limit: maxRequests,
+        windowMs
+      });
+    }
+    
+    // Add current request
+    recentRequests.push(now);
+    rateLimitStore.set(clientId, recentRequests);
+    
+    // Add headers
+    res.set({
+      'X-RateLimit-Limit': maxRequests,
+      'X-RateLimit-Remaining': Math.max(0, maxRequests - recentRequests.length),
+      'X-RateLimit-Reset': new Date(now + windowMs).toISOString()
+    });
+    
+    next();
+  };
+}
+
+// Apply rate limiting to API routes
+app.use('/api/', rateLimit(15 * 60 * 1000, 100)); // 100 requests per 15 minutes
+
 // Add support for both JSON and form-encoded data
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
