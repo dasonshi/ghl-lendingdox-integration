@@ -423,15 +423,13 @@ async function pollLendingDox() {
           }
         };
         
-        try {
-          c// FIXED: Call function directly
-await upsertOpportunityFromPayload(payload);
-
-          console.log(`✅ Upserted opportunity for loanId: ${payload.loanId}`);
-        } catch (err) {
-          console.error('❌ Error posting to /api/opportunity:', err?.response?.data || err.message);
-        }
-      }
+try {
+  // FIXED: Call function directly
+  await upsertOpportunityFromPayload(payload);
+  console.log(`✅ Upserted opportunity for loanId: ${payload.loanId}`);
+} catch (err) {
+  console.error('❌ Error upserting opportunity:', err.message);
+}      }
     }
   } catch (error) {
     console.error('❌ Error polling LendingDox:', error.message);
