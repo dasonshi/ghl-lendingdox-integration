@@ -23,7 +23,47 @@ if (process.env.NODE_ENV !== 'production') {
 
 const express = require('express');
 const axios = require('axios');
+const nodemailer = require('nodemailer');
 const app = express();
+
+// ---------------- Email Configuration ----------------
+let transporter = null;
+
+function initializeEmailTransporter() {
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    console.log('⚠️ Email configuration missing, email alerts will be disabled');
+    return;
+  }
+
+  transporter = nodemailer.createTransporter({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS
+    },
+    // Additional options for better reliability
+    pool: true,
+    maxConnections: 5,
+    maxMessages: 100,
+    rateDelta: 1000,
+    rateLimit: 10
+  });
+
+  // Verify the transporter configuration
+  transporter.verify((error, success) => {
+    if (error) {
+      console.error('❌ Email transporter verification failed:', error);
+      transporter = null;
+    } else {
+      console.log('✅ Email transporter ready');
+    }
+  });
+}
+
+// Initialize email on startup
+initializeEmailTransporter();
 
 // ---------------- Request Logging Middleware ----------------
 app.use((req, res, next) => {
@@ -147,12 +187,11 @@ async function refreshGhlToken() {
     return accessToken;
   } catch (error) {
     console.error('Failed to refresh token:', error.response?.data || error.message);
-      // Send email alert for critical token failure
-  await sendAlert(
-    'Token Refresh Failed - Action Required',
-    `Your GoHighLevel refresh token has expired and needs to be renewed.\n\nThis means your loan processing integration has stopped working until you re-authenticate.\n\nError: ${error.response?.data?.error_description || error.message}`
-  );
-
+    // Send email alert for critical token failure
+    await sendAlert(
+      'Token Refresh Failed - Action Required',
+      `Your GoHighLevel refresh token has expired and needs to be renewed.\n\nThis means your loan processing integration has stopped working until you re-authenticate.\n\nError: ${error.response?.data?.error_description || error.message}\n\nPlease visit your integration server and re-authenticate: ${process.env.APP_URL || 'your-server-url'}/auth/ghl`
+    );
     throw error;
   }
 }
@@ -233,33 +272,50 @@ async function ghlRequest(method, url, body, params) {
     throw err;
   }
 }
+
 // ---------------- Email Alert System ----------------
 async function sendAlert(subject, message) {
-  // Only send alerts if configured
-  if (!process.env.EMAILJS_SERVICE_ID || !process.env.ALERT_EMAIL) {
-    console.log('⚠️ Email alerts not configured, skipping alert');
+  // Check if email is configured and enabled
+  if (!transporter || !process.env.ALERT_EMAIL_TO) {
+    console.log('⚠️ Email alerts not configured, skipping alert:', subject);
     return;
   }
 
   try {
-    const payload = {
-      service_id: process.env.EMAILJS_SERVICE_ID,
-      template_id: process.env.EMAILJS_TEMPLATE_ID,
-      user_id: process.env.EMAILJS_PUBLIC_KEY,
-      template_params: {
-        subject: subject,
-        message: message,
-        timestamp: new Date().toISOString(),
-        app_url: process.env.APP_URL || 'https://ghl-lendingdox-integration.onrender.com'
-      }
+    const mailOptions = {
+      from: `"GHL Integration Alert" <${process.env.SMTP_USER}>`,
+      to: process.env.ALERT_EMAIL_TO,
+      subject: `🚨 ${subject}`,
+      text: message,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #d32f2f;">🚨 ${subject}</h2>
+          <div style="background: #f5f5f5; padding: 20px; border-radius: 5px;">
+            <pre style="white-space: pre-wrap; font-family: monospace; font-size: 14px;">${message}</pre>
+          </div>
+          <hr style="margin: 20px 0;">
+          <p style="color: #666; font-size: 12px;">
+            <strong>Timestamp:</strong> ${new Date().toISOString()}<br>
+            <strong>Server:</strong> ${process.env.APP_URL || 'Unknown'}<br>
+            <strong>Environment:</strong> ${process.env.NODE_ENV || 'development'}
+          </p>
+        </div>
+      `
     };
 
-    await axios.post('https://api.emailjs.com/api/v1.0/email/send', payload);
-    console.log('📧 Alert email sent successfully:', subject);
+    const info = await transporter.sendMail(mailOptions);
+    console.log('📧 Alert email sent successfully:', info.messageId);
   } catch (error) {
-    console.error('❌ Failed to send alert email:', error.response?.data || error.message);
+    console.error('❌ Failed to send alert email:', error.message);
+    
+    // Try to reinitialize transporter if it failed
+    if (error.code === 'EAUTH' || error.code === 'ECONNECTION') {
+      console.log('🔄 Attempting to reinitialize email transporter...');
+      initializeEmailTransporter();
+    }
   }
 }
+
 // ---------------- Contact Helpers ----------------
 async function findContactByEmail(email) {
   if (!email) return null;
@@ -633,10 +689,14 @@ app.post('/api/trigger-poll', requireApiKey, async (req, res) => {
     });
   }
 });
-// Test route for email alerts (remove after testing)
+
+// Test route for email alerts
 app.post('/api/test-alert', requireApiKey, async (req, res) => {
   try {
-    await sendAlert('Test Alert', 'This is a test email from your GHL integration. If you receive this, email alerts are working correctly!');
+    await sendAlert(
+      'Test Alert', 
+      'This is a test email from your GHL integration. If you receive this, email alerts are working correctly!\n\nTest details:\n- Server is running normally\n- Email configuration is working\n- Nodemailer is properly configured'
+    );
     res.json({ success: true, message: 'Test alert sent' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -776,6 +836,7 @@ app.get('/health', (req, res) => {
     hasRefreshToken: !!refreshToken,
     locationId: GHL_LOCATION_ID,
     pollingEnabled: process.env.ENABLE_POLL === 'true',
+    emailConfigured: !!transporter && !!process.env.ALERT_EMAIL_TO,
     version: '1.0.0'
   });
 });
@@ -783,10 +844,12 @@ app.get('/health', (req, res) => {
 // ---------------- Error Handling ----------------
 process.on('uncaughtException', err => {
   console.error('💥 Uncaught Exception:', err);
+  sendAlert('Server Error - Uncaught Exception', `An uncaught exception occurred:\n\n${err.stack}`);
 });
 
 process.on('unhandledRejection', reason => {
   console.error('💥 Unhandled Rejection:', reason);
+  sendAlert('Server Error - Unhandled Rejection', `An unhandled promise rejection occurred:\n\n${reason}`);
 });
 
 // ---------------- Start Server ----------------
@@ -799,4 +862,5 @@ app.listen(PORT, () => {
     console.log(`🔄 Polling Interval: ${POLL_MS}ms`);
   }
   console.log(`🔒 API Key Protection: ${!!process.env.INTERNAL_API_KEY}`);
+  console.log(`📧 Email Alerts: ${!!transporter && !!process.env.ALERT_EMAIL_TO ? 'Enabled' : 'Disabled'}`);
 });
