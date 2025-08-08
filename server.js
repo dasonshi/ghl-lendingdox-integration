@@ -75,6 +75,34 @@ async function refreshGhlToken() {
   }
 }
 
+// ---------------- Enhanced GHL Request with Retry Logic ----------------
+async function ghlRequestWithRetry(method, url, body, params, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await ghlRequest(method, url, body, params);
+    } catch (error) {
+      const isRetryable = error?.response?.status >= 500 || // Server errors
+                         error?.response?.status === 429 || // Rate limit
+                         error.code === 'ECONNRESET' ||     // Connection issues
+                         error.code === 'ETIMEDOUT';        // Timeout
+
+      if (attempt === maxRetries || !isRetryable) {
+        console.error(`❌ GHL request failed after ${attempt} attempts:`, {
+          method,
+          url,
+          status: error?.response?.status,
+          error: error?.response?.data || error.message
+        });
+        throw error;
+      }
+
+      const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+      console.log(`🔄 Retry ${attempt}/${maxRetries} for ${method} ${url} after ${delay}ms (Status: ${error?.response?.status})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
 async function ghlRequest(method, url, body, params) {
   const base = 'https://services.leadconnectorhq.com';
   
@@ -86,7 +114,7 @@ async function ghlRequest(method, url, body, params) {
   };
   
   try {
-    const config = { method, url: `${base}${url}`, headers };
+    const config = { method, url: `${base}${url}`, headers, timeout: 30000 }; // 30s timeout
     if (body) config.data = body;
     if (params) config.params = params;
     
@@ -104,7 +132,7 @@ async function ghlRequest(method, url, body, params) {
       console.log('🔄 Token expired, refreshing...');
       await refreshGhlToken();
       const newHeaders = { ...headers, Authorization: `Bearer ${accessToken}` };
-      const config2 = { method, url: `${base}${url}`, headers: newHeaders };
+      const config2 = { method, url: `${base}${url}`, headers: newHeaders, timeout: 30000 };
       if (body) config2.data = body;
       if (params) config2.params = params;
       
@@ -128,7 +156,7 @@ async function ghlRequest(method, url, body, params) {
 async function findContactByEmail(email) {
   if (!email) return null;
   try {
-    const data = await ghlRequest('get', '/contacts/', null, { 
+    const data = await ghlRequestWithRetry('get', '/contacts/', null, { 
       query: email, 
       locationId: GHL_LOCATION_ID, 
       limit: 50 
@@ -151,7 +179,7 @@ async function createContact({ email, firstName, lastName, phone }) {
   };
   
   try {
-    const data = await ghlRequest('post', '/contacts/', payload);
+    const data = await ghlRequestWithRetry('post', '/contacts/', payload);
     console.log('✅ Contact created:', data?.contact?.id || data?.id);
     return data?.contact || data;
   } catch (error) {
@@ -198,7 +226,7 @@ async function findOppByLoanId(loanId, pipelineId) {
   if (!loanId) return null;
   
   try {
-    const data = await ghlRequest('get', '/opportunities/', null, {
+    const data = await ghlRequestWithRetry('get', '/opportunities/', null, {
       pipelineId: pipelineId || DEFAULT_PIPELINE_ID,
       locationId: GHL_LOCATION_ID,
       limit: 100
@@ -328,14 +356,14 @@ async function upsertOpportunityFromPayload(payload) {
 
   console.log('🏗️ Upserting opportunity with payload:', JSON.stringify(opportunityPayload, null, 2));
 
-  // Step 3: Try upsert, fallback to create
+  // Step 3: Try upsert, fallback to create (WITH RETRY LOGIC)
   try {
-    const result = await ghlRequest('post', '/opportunities/upsert', opportunityPayload);
+    const result = await ghlRequestWithRetry('post', '/opportunities/upsert', opportunityPayload);
     console.log('✅ Opportunity upserted successfully:', result?.opportunity?.id || result?.id);
     return result;
   } catch (upsertError) {
     console.log('⚠️ Upsert failed, trying create endpoint...');
-    const result = await ghlRequest('post', '/opportunities/', opportunityPayload);
+    const result = await ghlRequestWithRetry('post', '/opportunities/', opportunityPayload);
     console.log('✅ Opportunity created successfully:', result?.opportunity?.id || result?.id);
     return result;
   }
@@ -344,7 +372,7 @@ async function upsertOpportunityFromPayload(payload) {
 async function updateOpportunity(id, body) {
   try {
     console.log('🔄 Updating opportunity:', id, 'with:', JSON.stringify(body, null, 2));
-    const result = await ghlRequest('put', `/opportunities/${id}`, body);
+    const result = await ghlRequestWithRetry('put', `/opportunities/${id}`, body);
     console.log('✅ Opportunity updated:', id);
     return result;
   } catch (error) {
@@ -391,6 +419,113 @@ app.post('/api/opportunity', requireApiKey, async (req, res) => {
   }
 });
 
+// ---------------- Manual Trigger Route (for testing) ----------------
+app.post('/api/trigger-poll', requireApiKey, async (req, res) => {
+  try {
+    console.log('🔥 Manual poll triggered via API');
+    
+    // Override the minutes parameter if provided
+    const minutes = req.body.minutes || 15;
+    console.log(`🕐 Looking back ${minutes} minutes`);
+    
+    const params = { 
+      CustomerID: LENDINGDOX_CUSTOMER_ID, 
+      UserID: LENDINGDOX_USER_ID, 
+      Minutes: minutes 
+    };
+    
+    const response = await axios.get('https://www.lendingdoxapi.com/api/Loans/GetLoanChanges/', { params });
+    const loanChanges = response.data;
+    const loanCount = Array.isArray(loanChanges?.loans) ? loanChanges.loans.length : 0;
+    console.log(`📊 Manual poll - Loan changes received: ${loanCount}`);
+    
+    let processedLoans = 0;
+    let skippedLoans = 0;
+    const results = [];
+    
+    if (loanCount > 0) {
+      for (const loan of loanChanges.loans || []) {
+        // Skip loans without email
+        if (!loan.borrower?.contacts?.email) {
+          console.log(`⚠️ Skipping loan ${loan.loanId} - no borrower email`);
+          skippedLoans++;
+          results.push({
+            loanId: loan.loanId,
+            status: 'skipped',
+            reason: 'No borrower email'
+          });
+          continue;
+        }
+        
+        const payload = {
+          loanId: loan.loanId,
+          name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+          value: parseInt(loan.loanAmount) || 100000,
+          
+          // Extract from nested borrower object
+          contactEmail: loan.borrower?.contacts?.email,
+          contactFirstName: loan.borrower?.firstName,
+          contactLastName: loan.borrower?.lastName,
+          contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
+          
+          customFields: {
+            loanNumber: loan.loanNumber,
+            loanStatus: loan.loanStatus?.name,
+            loanType: loan.loanType?.name,
+            loanOfficer: loan.loanOfficer,
+            purpose: loan.purpose?.name,
+            occupancy: loan.occupancy?.name,
+            creditScore: loan.creditScore,
+            noteRate: loan.noteRate,
+            program: loan.program,
+            lender: loan.lender
+          }
+        };
+        
+        try {
+          const result = await upsertOpportunityFromPayload(payload);
+          processedLoans++;
+          console.log(`✅ Processed loan: ${payload.loanId}`);
+          results.push({
+            loanId: loan.loanId,
+            loanNumber: loan.loanNumber,
+            borrowerEmail: loan.borrower?.contacts?.email,
+            status: 'processed',
+            opportunityId: result?.opportunity?.id || result?.id
+          });
+        } catch (err) {
+          console.error('❌ Error processing loan:', err.message);
+          results.push({
+            loanId: loan.loanId,
+            status: 'error',
+            error: err.message
+          });
+        }
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      summary: {
+        loansFound: loanCount,
+        loansProcessed: processedLoans,
+        loansSkipped: skippedLoans,
+        minutesBack: minutes
+      },
+      results: results,
+      message: `Manual poll completed. Found ${loanCount} loans, processed ${processedLoans}, skipped ${skippedLoans}.`
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual poll error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.response?.data || 'Unknown error during manual poll'
+    });
+  }
+});
+
 // ---------------- LendingDox Polling ----------------
 async function pollLendingDox() {
   console.log('🔍 Polling LendingDox for loan changes...');
@@ -406,54 +541,58 @@ async function pollLendingDox() {
     const loanCount = Array.isArray(loanChanges?.loans) ? loanChanges.loans.length : 0;
     console.log(`📊 Loan changes received: ${loanCount}`);
     
-if (loanCount > 0) {
-  for (const loan of loanChanges.loans || []) {
-    // Skip loans without email
-if (!loan.borrower?.contacts?.email) {
-  console.log(`⚠️ Skipping loan ${loan.loanId} - no borrower email`);
-  continue;
-}
-    const payload = {
-      loanId: loan.loanId,
-      name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
-      value: parseInt(loan.loanAmount) || 100000,
-      
-      // Extract from nested borrower object
-      contactEmail: loan.borrower?.contacts?.email,
-      contactFirstName: loan.borrower?.firstName,
-      contactLastName: loan.borrower?.lastName,
-      contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
-      
-      customFields: {
-        loanNumber: loan.loanNumber,
-        loanStatus: loan.loanStatus?.name,
-        loanType: loan.loanType?.name,
-        loanOfficer: loan.loanOfficer,
-        purpose: loan.purpose?.name,
-        occupancy: loan.occupancy?.name,
-        creditScore: loan.creditScore,
-        noteRate: loan.noteRate,
-        program: loan.program,
-        lender: loan.lender
-      }
-    };
+    if (loanCount > 0) {
+      for (const loan of loanChanges.loans || []) {
+        // Skip loans without email
+        if (!loan.borrower?.contacts?.email) {
+          console.log(`⚠️ Skipping loan ${loan.loanId} - no borrower email`);
+          continue;
+        }
         
-try {
-  // FIXED: Call function directly
-  await upsertOpportunityFromPayload(payload);
-  console.log(`✅ Upserted opportunity for loanId: ${payload.loanId}`);
-} catch (err) {
-  console.error('❌ Error upserting opportunity:', err.message);
-}      }
+        const payload = {
+          loanId: loan.loanId,
+          name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+          value: parseInt(loan.loanAmount) || 100000,
+          
+          // Extract from nested borrower object
+          contactEmail: loan.borrower?.contacts?.email,
+          contactFirstName: loan.borrower?.firstName,
+          contactLastName: loan.borrower?.lastName,
+          contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
+          
+          customFields: {
+            loanNumber: loan.loanNumber,
+            loanStatus: loan.loanStatus?.name,
+            loanType: loan.loanType?.name,
+            loanOfficer: loan.loanOfficer,
+            purpose: loan.purpose?.name,
+            occupancy: loan.occupancy?.name,
+            creditScore: loan.creditScore,
+            noteRate: loan.noteRate,
+            program: loan.program,
+            lender: loan.lender
+          }
+        };
+        
+        try {
+          // Call function directly with retry logic built-in
+          await upsertOpportunityFromPayload(payload);
+          console.log(`✅ Upserted opportunity for loanId: ${payload.loanId}`);
+        } catch (err) {
+          console.error('❌ Error upserting opportunity:', err.message);
+        }
+      }
     }
   } catch (error) {
     console.error('❌ Error polling LendingDox:', error.message);
   }
 }
 
-// Start polling immediately, then every interval
-pollLendingDox();
-setInterval(pollLendingDox, Number(POLL_INTERVAL_MS) || 300000);
+// Only start polling if enabled
+if (process.env.ENABLE_POLL === 'true') {
+  pollLendingDox();
+  setInterval(pollLendingDox, POLL_MS);
+}
 
 // ---------------- OAuth Routes ----------------
 app.get('/auth/ghl', (req, res) => {
@@ -514,9 +653,13 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
     hasAccessToken: !!accessToken,
     hasRefreshToken: !!refreshToken,
-    locationId: GHL_LOCATION_ID
+    locationId: GHL_LOCATION_ID,
+    pollingEnabled: process.env.ENABLE_POLL === 'true',
+    version: '1.0.0'
   });
 });
 
