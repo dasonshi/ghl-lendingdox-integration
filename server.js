@@ -147,6 +147,12 @@ async function refreshGhlToken() {
     return accessToken;
   } catch (error) {
     console.error('Failed to refresh token:', error.response?.data || error.message);
+      // Send email alert for critical token failure
+  await sendAlert(
+    'Token Refresh Failed - Action Required',
+    `Your GoHighLevel refresh token has expired and needs to be renewed.\n\nThis means your loan processing integration has stopped working until you re-authenticate.\n\nError: ${error.response?.data?.error_description || error.message}`
+  );
+
     throw error;
   }
 }
@@ -227,7 +233,33 @@ async function ghlRequest(method, url, body, params) {
     throw err;
   }
 }
+// ---------------- Email Alert System ----------------
+async function sendAlert(subject, message) {
+  // Only send alerts if configured
+  if (!process.env.EMAILJS_SERVICE_ID || !process.env.ALERT_EMAIL) {
+    console.log('⚠️ Email alerts not configured, skipping alert');
+    return;
+  }
 
+  try {
+    const payload = {
+      service_id: process.env.EMAILJS_SERVICE_ID,
+      template_id: process.env.EMAILJS_TEMPLATE_ID,
+      user_id: process.env.EMAILJS_PUBLIC_KEY,
+      template_params: {
+        subject: subject,
+        message: message,
+        timestamp: new Date().toISOString(),
+        app_url: process.env.APP_URL || 'https://ghl-lendingdox-integration.onrender.com'
+      }
+    };
+
+    await axios.post('https://api.emailjs.com/api/v1.0/email/send', payload);
+    console.log('📧 Alert email sent successfully:', subject);
+  } catch (error) {
+    console.error('❌ Failed to send alert email:', error.response?.data || error.message);
+  }
+}
 // ---------------- Contact Helpers ----------------
 async function findContactByEmail(email) {
   if (!email) return null;
@@ -599,6 +631,15 @@ app.post('/api/trigger-poll', requireApiKey, async (req, res) => {
       error: error.message,
       details: error.response?.data || 'Unknown error during manual poll'
     });
+  }
+});
+// Test route for email alerts (remove after testing)
+app.post('/api/test-alert', requireApiKey, async (req, res) => {
+  try {
+    await sendAlert('Test Alert', 'This is a test email from your GHL integration. If you receive this, email alerts are working correctly!');
+    res.json({ success: true, message: 'Test alert sent' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
