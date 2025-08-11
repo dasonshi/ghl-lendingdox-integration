@@ -659,6 +659,192 @@ app.post('/api/test-alert', requireApiKey, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ---------------- Manual Resync Route (for recovery) ----------------
+app.post('/api/v1/resync-all', requireApiKey, async (req, res) => {
+  try {
+    console.log('🔄 Manual resync triggered - processing ALL loans');
+    
+    const { hours = 24, dryRun = false } = req.body; // Default to 24 hours
+    const minutes = hours * 60;
+    
+    console.log(`🕐 Resyncing loans from last ${hours} hours (${minutes} minutes)`);
+    if (dryRun) console.log('🧪 DRY RUN MODE - No changes will be made');
+    
+    // First, test token access
+    try {
+      await getValidAccessToken();
+      console.log('✅ Token access confirmed');
+    } catch (tokenError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+        message: 'Please re-authorize at /auth/ghl before running resync',
+        authUrl: '/auth/ghl',
+        tokenError: tokenError.message
+      });
+    }
+    
+    const params = { 
+      CustomerID: LENDINGDOX_CUSTOMER_ID, 
+      UserID: LENDINGDOX_USER_ID, 
+      Minutes: minutes 
+    };
+    
+    const response = await axios.get('https://www.lendingdoxapi.com/api/Loans/GetLoanChanges/', { 
+      params, 
+      timeout: 30000 
+    });
+    
+    const loanChanges = response.data;
+    const loans = Array.isArray(loanChanges?.loans) ? loanChanges.loans : [];
+    
+    console.log(`📊 Found ${loans.length} loans to process`);
+    
+    const results = {
+      total: loans.length,
+      processed: 0,
+      skipped: 0,
+      errors: 0,
+      details: []
+    };
+    
+    // Process loans in batches to avoid overwhelming the API
+    const batchSize = 5;
+    for (let i = 0; i < loans.length; i += batchSize) {
+      const batch = loans.slice(i, i + batchSize);
+      console.log(`🔄 Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(loans.length/batchSize)}`);
+      
+      await Promise.all(batch.map(async (loan) => {
+        try {
+          // Skip loans without email
+          if (!loan.borrower?.contacts?.email) {
+            console.log(`⚠️ Skipping loan ${loan.loanId} - no borrower email`);
+            results.skipped++;
+            results.details.push({
+              loanId: loan.loanId,
+              loanNumber: loan.loanNumber,
+              status: 'skipped',
+              reason: 'No borrower email'
+            });
+            return;
+          }
+          
+          const payload = {
+            loanId: loan.loanId,
+            name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+            value: parseInt(loan.loanAmount) || 100000,
+            contactEmail: loan.borrower?.contacts?.email,
+            contactFirstName: loan.borrower?.firstName,
+            contactLastName: loan.borrower?.lastName,
+            contactPhone: loan.borrower?.contacts?.mobilePhone || 
+                        loan.borrower?.contacts?.homePhone || 
+                        loan.borrower?.contacts?.workPhone,
+            customFields: {
+              loan_status: loan.loanStatus?.name,
+              program: loan.program,
+              apr: loan.apr || loan.APR,
+              property_type: loan.propertyType?.name,
+              occupancy: loan.occupancy?.name,
+              purpose: loan.purpose?.name,
+              loan_type: loan.loanType?.name,
+              resync_timestamp: new Date().toISOString()
+            }
+          };
+          
+          if (!dryRun) {
+            const result = await upsertOpportunityFromPayload(payload);
+            results.processed++;
+            results.details.push({
+              loanId: loan.loanId,
+              loanNumber: loan.loanNumber,
+              borrowerEmail: loan.borrower?.contacts?.email,
+              status: 'processed',
+              opportunityId: result?.opportunity?.id || result?.id
+            });
+            console.log(`✅ Resynced loan: ${payload.loanId}`);
+          } else {
+            results.processed++; // Count as processed in dry run
+            results.details.push({
+              loanId: loan.loanId,
+              loanNumber: loan.loanNumber,
+              borrowerEmail: loan.borrower?.contacts?.email,
+              status: 'dry_run_success',
+              payload: payload
+            });
+            console.log(`🧪 Dry run - would process loan: ${payload.loanId}`);
+          }
+          
+        } catch (error) {
+          console.error(`❌ Error resyncing loan ${loan.loanId}:`, error.message);
+          results.errors++;
+          results.details.push({
+            loanId: loan.loanId,
+            loanNumber: loan.loanNumber,
+            status: 'error',
+            error: error.message
+          });
+        }
+      }));
+      
+      // Small delay between batches
+      if (i + batchSize < loans.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    const summary = {
+      success: true,
+      resyncType: dryRun ? 'dry_run' : 'full_resync',
+      timeRange: `${hours} hours`,
+      summary: {
+        totalLoans: results.total,
+        processed: results.processed,
+        skipped: results.skipped,
+        errors: results.errors,
+        successRate: results.total > 0 ? Math.round((results.processed / results.total) * 100) : 0
+      },
+      details: results.details,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(`🏁 Resync completed: ${results.processed}/${results.total} loans processed`);
+    
+    // Send alert about resync
+    if (!dryRun && results.total > 0) {
+      await sendAlert(
+        'Manual Resync Completed',
+        `Manual loan resync completed successfully.
+        
+Summary:
+- Total Loans: ${results.total}
+- Processed: ${results.processed}
+- Skipped: ${results.skipped}  
+- Errors: ${results.errors}
+- Success Rate: ${summary.summary.successRate}%
+- Time Range: ${hours} hours
+
+${results.errors > 0 ? `\nErrors:\n${results.details.filter(r => r.status === 'error').map(r => `- Loan ${r.loanId}: ${r.error}`).join('\n')}` : ''}`
+      );
+    }
+    
+    res.json(summary);
+    
+  } catch (error) {
+    console.error('❌ Manual resync error:', error.message);
+    
+    await sendAlert(
+      'Manual Resync Failed',
+      `Manual loan resync failed with error:\n\n${error.message}\n\nStack trace:\n${error.stack}`
+    );
+    
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      authUrl: error.message.includes('token') ? '/auth/ghl' : null,
+      details: error.response?.data || 'Unknown error during manual resync'
+    });
+  }
+});
 
 // ---------------- LendingDox Polling ----------------
 async function pollLendingDox() {
