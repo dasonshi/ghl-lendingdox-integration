@@ -670,6 +670,9 @@ async function pollLendingDox() {
   };
   
   try {
+    // Check if we have valid tokens before starting
+    await getValidAccessToken();
+    
     const response = await axios.get('https://www.lendingdoxapi.com/api/Loans/GetLoanChanges/', { params });
     const loanChanges = response.data;
     const loanCount = Array.isArray(loanChanges?.loans) ? loanChanges.loans.length : 0;
@@ -716,6 +719,12 @@ async function pollLendingDox() {
     }
   } catch (error) {
     console.error('❌ Error polling LendingDox:', error.message);
+    
+    // If it's a token error, send alert and skip this poll
+    if (error.message.includes('tokens')) {
+      console.log('⚠️ Token issue detected, skipping this poll cycle');
+      await sendAlert('Polling Token Error', `Polling failed due to token issue: ${error.message}\n\nPlease check token status at /auth/status`);
+    }
   }
 }
 
