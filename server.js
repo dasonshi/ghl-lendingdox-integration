@@ -200,7 +200,9 @@ async function ghlRequest(method, url, body, params) {
 const accessToken = await getValidAccessToken();
 const headers = {
   Authorization: `Bearer ${accessToken}`,
-  // ...
+  Version: '2021-07-28',
+  'Content-Type': 'application/json',
+  Accept: 'application/json'
 };
   
   try {
@@ -771,20 +773,16 @@ app.get('/oauth/callback', async (req, res) => {
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
     
-    const { access_token, refresh_token } = tokenResponse.data;
-    accessToken = access_token;
-    refreshToken = refresh_token || refreshToken;
-    
+const { access_token, refresh_token } = tokenResponse.data;
+// Save tokens to database using our new system
+const { saveTokens } = require('./tokens');
+await saveTokens(access_token, refresh_token, 3600); // 1 hour default    
     console.log('✅ OAuth Success');
     
     // Only log tokens in development
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('Access Token:', accessToken);
-      console.log('Refresh Token:', refreshToken);
-      console.log('\n🔧 Add these to your .env file:');
-      console.log(`GHL_ACCESS_TOKEN=${accessToken}`);
-      console.log(`GHL_REFRESH_TOKEN=${refreshToken}`);
-    }
+if (process.env.NODE_ENV !== 'production') {
+  console.log('Tokens saved to database successfully');
+}
     
     res.send(`
       <h1>OAuth Successful!</h1>
@@ -799,14 +797,25 @@ app.get('/oauth/callback', async (req, res) => {
 });
 
 // ---------------- Health Check Route ----------------
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  let tokenStatus = { hasAccessToken: false, hasRefreshToken: false, error: null };
+  
+  try {
+    const token = await getValidAccessToken();
+    tokenStatus.hasAccessToken = !!token;
+    tokenStatus.hasRefreshToken = true; // If getValidAccessToken() succeeds, refresh token is working
+  } catch (error) {
+    tokenStatus.error = error.message;
+  }
+  
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: process.memoryUsage(),
-    hasAccessToken: !!accessToken,
-    hasRefreshToken: !!refreshToken,
+    hasAccessToken: tokenStatus.hasAccessToken,
+    hasRefreshToken: tokenStatus.hasRefreshToken,
+    tokenError: tokenStatus.error,
     locationId: GHL_LOCATION_ID,
     pollingEnabled: process.env.ENABLE_POLL === 'true',
     emailConfigured: !!transporter && !!process.env.ALERT_EMAIL_TO,
@@ -829,7 +838,8 @@ process.on('unhandledRejection', reason => {
 app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
   console.log(`📍 Location ID: ${GHL_LOCATION_ID}`);
-  console.log(`🔑 Has Access Token: ${!!accessToken}`);
+  console.log(`🔑 Token System: Database Storage`);
+
   console.log(`🔄 Polling Enabled: ${process.env.ENABLE_POLL === 'true'}`);
   if (process.env.ENABLE_POLL === 'true') {
     console.log(`🔄 Polling Interval: ${POLL_MS}ms`);
