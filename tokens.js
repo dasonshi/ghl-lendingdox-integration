@@ -1,5 +1,5 @@
 const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('./tokens.db');
+const db = new sqlite3.Database('/tmp/tokens.db');
 
 // Create the table when the app starts
 db.run(`CREATE TABLE IF NOT EXISTS tokens (
