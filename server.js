@@ -163,24 +163,8 @@ const {
   DEFAULT_PIPELINE_ID,
   DEFAULT_STAGE_ID,
   POLL_INTERVAL_MS
-} = process.env;  
-  try {
-    const { data } = await axios.post(url, formData.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    });
-    accessToken = data.access_token;
-    if (data.refresh_token) refreshToken = data.refresh_token;
-    console.log('♻️ Access token refreshed');
-    return accessToken;
-  } catch (error) {
-    console.error('Failed to refresh token:', error.response?.data || error.message);
-    // Send email alert for critical token failure
-    await sendAlert(
-      'Token Refresh Failed - Action Required',
-      `Your GoHighLevel refresh token has expired and needs to be renewed.\n\nThis means your loan processing integration has stopped working until you re-authenticate.\n\nError: ${error.response?.data?.error_description || error.message}\n\nPlease visit your integration server and re-authenticate: ${process.env.APP_URL || 'your-server-url'}/auth/ghl`
-    );
-    throw error;
-  }
+} = process.env;
+
 
 // ---------------- Enhanced GHL Request with Retry Logic ----------------
 async function ghlRequestWithRetry(method, url, body, params, maxRetries = 3) {
