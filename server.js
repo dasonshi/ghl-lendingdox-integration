@@ -450,7 +450,7 @@ function mapCreateOpportunity(payload) {
     pipelineId,
     pipelineStageId: pipelineStageId,  // FIXED: correct field name
     status,
-    : value,
+    monetaryValue: value,
     contactId: contactId || undefined
   };
 
@@ -736,18 +736,13 @@ async function pollLendingDox() {
           contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
           
           customFields: {
-            loanNumber: loan.loanNumber,
-            loanStatus: loan.loanStatus?.name,
-            loanType: loan.loanType?.name,
-            loanOfficer: loan.loanOfficer,
-            purpose: loan.purpose?.name,
-            occupancy: loan.occupancy?.name,
-            creditScore: loan.creditScore,
-            noteRate: loan.noteRate,
+            loan_status: loan.loanStatus?.name,
             program: loan.program,
-            lender: loan.lender,
-            apr: loan.apr || loan.APR, // Handle both possible field names
-            propertyType: loan.propertyType?.name || loan.property_type?.name // Handle nested object or direct value
+            apr: loan.apr || loan.APR,
+            property_type: loan.propertyType?.name || loan.property_type?.name,
+            occupancy: loan.occupancy?.name,
+            purpose: loan.purpose?.name,
+            loan_type: loan.loanType?.name
           }
         };
         
