@@ -767,6 +767,11 @@ if (process.env.ENABLE_POLL === 'true') {
 }
 
 // ---------------- OAuth Routes ----------------
+app.get('/auth/callback', (req, res) => {
+  // Redirect to your actual OAuth handler with all query parameters
+  const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+  res.redirect(`/oauth/callback${queryString}`);
+});
 app.get('/auth/ghl', (req, res) => {
   const redirectUri = GHL_REDIRECT_URI || `http://localhost:${PORT}/oauth/callback`;
   const scopes = 'contacts.write opportunities.write associations.write objects/record.write';
