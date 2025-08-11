@@ -1,6 +1,46 @@
 const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('/tmp/tokens.db');
+const path = require('path');
+const fs = require('fs');
 
+// Function to get persistent database path
+function getDatabasePath() {
+  if (process.env.NODE_ENV === 'production') {
+    // Try persistent paths in order of preference
+    const persistentPaths = [
+      process.env.PERSISTENT_STORAGE_PATH && path.join(process.env.PERSISTENT_STORAGE_PATH, 'tokens.db'),
+      '/data/tokens.db',
+      '/app/data/tokens.db',
+      '/var/lib/app/tokens.db'
+    ].filter(Boolean);
+
+    // Check if any persistent path is writable
+    for (const dbPath of persistentPaths) {
+      try {
+        const dir = path.dirname(dbPath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        // Test write access
+        fs.writeFileSync(path.join(dir, 'test-write'), 'test');
+        fs.unlinkSync(path.join(dir, 'test-write'));
+        console.log(`✅ Using persistent storage: ${dbPath}`);
+        return dbPath;
+      } catch (error) {
+        console.log(`⚠️ Cannot use ${dbPath}: ${error.message}`);
+      }
+    }
+    
+    // Fallback with warning
+    console.warn('⚠️ WARNING: No persistent storage available, tokens will be lost on restart!');
+    console.warn('⚠️ Set PERSISTENT_STORAGE_PATH environment variable for persistent tokens');
+    return '/tmp/tokens.db';
+  }
+  
+  // Development
+  return path.join(__dirname, 'tokens.db');
+}
+
+const db = new sqlite3.Database(getDatabasePath());
 // Create the table when the app starts
 db.run(`CREATE TABLE IF NOT EXISTS tokens (
   id INTEGER PRIMARY KEY,
@@ -33,6 +73,10 @@ async function getTokens() {
 async function getValidAccessToken() {
   const tokens = await getTokens();
   
+  if (!tokens || !tokens.refresh_token) {
+    throw new Error('No tokens found. Please complete OAuth flow first at /auth/ghl');
+  }
+  
   // If we have a token that expires more than 5 minutes from now, use it
   if (tokens && new Date(tokens.expires_at) > new Date(Date.now() + 5 * 60 * 1000)) {
     console.log('✅ Using existing token');
@@ -49,20 +93,23 @@ async function getValidAccessToken() {
       client_id: process.env.GHL_CLIENT_ID,
       client_secret: process.env.GHL_CLIENT_SECRET,
       grant_type: 'refresh_token',
-      refresh_token: tokens?.refresh_token || process.env.GHL_REFRESH_TOKEN
+      refresh_token: tokens.refresh_token
     })
   });
   
   const data = await response.json();
   
   if (!response.ok) {
+    if (response.status === 400 || response.status === 401) {
+      throw new Error('Refresh token expired. Please re-authorize at /auth/ghl');
+    }
     throw new Error(`Token refresh failed: ${data.error || 'Unknown error'}`);
   }
   
   // Save the new tokens
   await saveTokens(
     data.access_token, 
-    data.refresh_token || tokens?.refresh_token,
+    data.refresh_token || tokens.refresh_token,
     data.expires_in
   );
   
