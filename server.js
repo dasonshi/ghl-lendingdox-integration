@@ -772,6 +772,15 @@ app.get('/auth/callback', (req, res) => {
   const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
   res.redirect(`/oauth/callback${queryString}`);
 });
+app.get('/debug/tokens', requireApiKey, (req, res) => {
+  res.json({
+    accessToken: accessToken ? 'Present' : 'Missing',
+    refreshToken: refreshToken ? 'Present' : 'Missing',
+    accessTokenLength: accessToken ? accessToken.length : 0,
+    refreshTokenLength: refreshToken ? refreshToken.length : 0
+  });
+});
+
 app.get('/auth/ghl', (req, res) => {
   const redirectUri = GHL_REDIRECT_URI || `http://localhost:${PORT}/oauth/callback`;
   const scopes = 'contacts.write opportunities.write associations.write objects/record.write';
