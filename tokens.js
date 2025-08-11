@@ -42,14 +42,20 @@ function getDatabasePath() {
 
 const db = new sqlite3.Database(getDatabasePath());
 // Create the table when the app starts
+// Create the table when the app starts
 db.run(`CREATE TABLE IF NOT EXISTS tokens (
   id INTEGER PRIMARY KEY,
   access_token TEXT,
   refresh_token TEXT,
   expires_at DATETIME,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`);
-
+)`, (err) => {
+  if (err) {
+    console.error('❌ Failed to create tokens table:', err);
+  } else {
+    console.log('✅ Tokens table ready');
+  }
+});
 async function saveTokens(accessToken, refreshToken, expiresIn) {
   return new Promise((resolve, reject) => {
     const expiresAt = new Date(Date.now() + expiresIn * 1000);

@@ -729,9 +729,13 @@ async function pollLendingDox() {
 }
 
 // Only start polling if enabled
+// Only start polling if enabled
 if (process.env.ENABLE_POLL === 'true') {
-  pollLendingDox();
-  setInterval(pollLendingDox, POLL_MS);
+  // Wait 5 seconds for database to initialize
+  setTimeout(() => {
+    pollLendingDox();
+    setInterval(pollLendingDox, POLL_MS);
+  }, 5000);
 }
 
 // ---------------- OAuth Routes ----------------
