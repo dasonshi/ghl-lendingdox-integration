@@ -17,7 +17,7 @@ REQUIRED_ENV.forEach(v => {
 
 // Only log sensitive info in development
 if (process.env.NODE_ENV !== 'production') {
-  console.log('Client ID:', process.env.GHL_CLIENT_ID);
+  console.log('Client ID:', process.env.GHL_CLIENT_ID?.substring(0, 8) + '...');
   console.log('Refresh Token exists:', !!process.env.GHL_REFRESH_TOKEN);
 }
 
@@ -835,15 +835,31 @@ process.on('unhandledRejection', reason => {
 });
 
 // ---------------- Start Server ----------------
-app.listen(PORT, () => {
+// ---------------- Start Server ----------------
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
   console.log(`📍 Location ID: ${GHL_LOCATION_ID}`);
   console.log(`🔑 Token System: Database Storage`);
-
   console.log(`🔄 Polling Enabled: ${process.env.ENABLE_POLL === 'true'}`);
   if (process.env.ENABLE_POLL === 'true') {
     console.log(`🔄 Polling Interval: ${POLL_MS}ms`);
   }
   console.log(`🔒 API Key Protection: ${!!process.env.INTERNAL_API_KEY}`);
   console.log(`📧 Email Alerts: ${!!transporter && !!process.env.ALERT_EMAIL_TO ? 'Enabled' : 'Disabled'}`);
+});// Graceful shutdown handling
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ HTTP server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 SIGINT received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ HTTP server closed');
+    process.exit(0);
+  });
+});
 });
