@@ -381,7 +381,7 @@ function buildCustomFields(customFields, loanId) {
   
   // Convert object to array format expected by GHL API
   const result = Object.entries(out).map(([key, value]) => ({
-    customFieldKey: key,
+    key,
     field_value: String(value ?? '')
   }));
   
