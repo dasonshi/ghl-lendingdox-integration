@@ -25,6 +25,8 @@ const express = require('express');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const app = express();
+const { getValidAccessToken } = require('./tokens');
+
 
 // ---------------- Email Configuration ----------------
 let transporter = null;
@@ -161,22 +163,7 @@ const {
   DEFAULT_PIPELINE_ID,
   DEFAULT_STAGE_ID,
   POLL_INTERVAL_MS
-} = process.env;
-
-// ---------------- Token Manager ----------------
-let accessToken = GHL_ACCESS_TOKEN;
-let refreshToken = GHL_REFRESH_TOKEN;
-
-async function refreshGhlToken() {
-  const url = 'https://services.leadconnectorhq.com/oauth/token';
-  const formData = new URLSearchParams({
-    client_id: GHL_CLIENT_ID,
-    client_secret: GHL_CLIENT_SECRET,
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    redirect_uri: GHL_REDIRECT_URI
-  });
-  
+} = process.env;  
   try {
     const { data } = await axios.post(url, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
@@ -194,7 +181,6 @@ async function refreshGhlToken() {
     );
     throw error;
   }
-}
 
 // ---------------- Enhanced GHL Request with Retry Logic ----------------
 async function ghlRequestWithRetry(method, url, body, params, maxRetries = 3) {
@@ -227,12 +213,11 @@ async function ghlRequestWithRetry(method, url, body, params, maxRetries = 3) {
 async function ghlRequest(method, url, body, params) {
   const base = 'https://services.leadconnectorhq.com';
   
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    Version: '2021-07-28',
-    'Content-Type': 'application/json',
-    Accept: 'application/json'
-  };
+const accessToken = await getValidAccessToken();
+const headers = {
+  Authorization: `Bearer ${accessToken}`,
+  // ...
+};
   
   try {
     const config = { method, url: `${base}${url}`, headers, timeout: 30000 }; // 30s timeout
@@ -249,27 +234,15 @@ async function ghlRequest(method, url, body, params) {
     const res = await axios(config);
     return res.data;
   } catch (err) {
-    if (err?.response?.status === 401) {
-      console.log('🔄 Token expired, refreshing...');
-      await refreshGhlToken();
-      const newHeaders = { ...headers, Authorization: `Bearer ${accessToken}` };
-      const config2 = { method, url: `${base}${url}`, headers: newHeaders, timeout: 30000 };
-      if (body) config2.data = body;
-      if (params) config2.params = params;
-      
-      const res2 = await axios(config2);
-      return res2.data;
-    }
-    
-    console.error('GHL Request Error:', {
-      status: err.response?.status,
-      statusText: err.response?.statusText,
-      data: err.response?.data,
-      url: `${base}${url}`,
-      method,
-      requestData: body
-    });
-    throw err;
+  console.error('GHL Request Error:', {
+    status: err.response?.status,
+    statusText: err.response?.statusText,
+    data: err.response?.data,
+    url: `${base}${url}`,
+    method,
+    requestData: body
+  });
+  throw err;
   }
 }
 
@@ -772,13 +745,20 @@ app.get('/auth/callback', (req, res) => {
   const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
   res.redirect(`/oauth/callback${queryString}`);
 });
-app.get('/debug/tokens', requireApiKey, (req, res) => {
-  res.json({
-    accessToken: accessToken ? 'Present' : 'Missing',
-    refreshToken: refreshToken ? 'Present' : 'Missing',
-    accessTokenLength: accessToken ? accessToken.length : 0,
-    refreshTokenLength: refreshToken ? refreshToken.length : 0
-  });
+app.get('/debug/tokens', requireApiKey, async (req, res) => {
+  try {
+    const token = await getValidAccessToken();
+    res.json({
+      accessToken: token ? 'Present' : 'Missing',
+      tokenLength: token ? token.length : 0,
+      status: 'Using database storage'
+    });
+  } catch (error) {
+    res.json({
+      accessToken: 'Error',
+      error: error.message
+    });
+  }
 });
 
 app.get('/auth/ghl', (req, res) => {
