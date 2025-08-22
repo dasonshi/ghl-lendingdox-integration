@@ -3,7 +3,7 @@ if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 } else {
   // In production, variables are provided by Render directly
-  console.log('🏭 Running in production mode - using Render environment variables');
+  console.log('🭐 Running in production mode - using Render environment variables');
 }
 
 // Validate required environment variables
@@ -37,7 +37,7 @@ function initializeEmailTransporter() {
     return;
   }
 
-  transporter = nodemailer.createTransport({
+  transporter = nodemailer.createTransporter({
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT) || 587,
     secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
@@ -165,6 +165,61 @@ const {
   POLL_INTERVAL_MS
 } = process.env;
 
+// ---------------- Helper Functions for Field Mapping ----------------
+
+/**
+ * Safely formats an address from LOS address object
+ */
+function formatAddress(addressObj) {
+  if (!addressObj) return '';
+  
+  const parts = [
+    addressObj.street,
+    addressObj.city,
+    addressObj.state,
+    addressObj.zipCode
+  ].filter(part => part && part.trim());
+  
+  return parts.join(', ');
+}
+
+/**
+ * Safely formats a full name from first and last name
+ */
+function formatFullName(firstName, lastName) {
+  const parts = [firstName, lastName].filter(part => part && part.trim());
+  return parts.join(' ');
+}
+
+/**
+ * Safely converts values to appropriate types for HighLevel
+ */
+function safeValue(value, type = 'string') {
+  if (value === null || value === undefined) return '';
+  
+  switch (type) {
+    case 'number':
+      const num = parseFloat(value);
+      return isNaN(num) ? '' : num;
+    case 'currency':
+      const currency = parseFloat(value);
+      return isNaN(currency) ? '' : currency;
+    case 'percent':
+      const percent = parseFloat(value);
+      return isNaN(percent) ? '' : percent;
+    case 'date':
+      // Ensure date is in proper format
+      if (!value) return '';
+      try {
+        const date = new Date(value);
+        return isNaN(date.getTime()) ? '' : date.toISOString().split('T')[0];
+      } catch {
+        return '';
+      }
+    default:
+      return String(value);
+  }
+}
 
 // ---------------- Enhanced GHL Request with Retry Logic ----------------
 async function ghlRequestWithRetry(method, url, body, params, maxRetries = 3) {
@@ -441,6 +496,51 @@ function mapUpdateOpportunity(payload) {
   return body;
 }
 
+// ---------------- Enhanced Field Mapping Function ----------------
+function mapLoanToCustomFields(loan) {
+  console.log('🗺️ Mapping loan fields:', loan.loanId);
+  
+  return {
+    // ============ EXISTING FIELDS ============
+    loan_status: loan.loanStatus?.name,
+    program: loan.program,
+    apr: safeValue(loan.apr || loan.APR, 'percent'),
+    property_type: loan.propertyType?.name,
+    occupancy: loan.occupancy?.name,
+    purpose: loan.purpose?.name,
+    loan_type: loan.loanType?.name,
+    
+    // ============ NEW FIELDS FROM CSV MAPPING ============
+    
+    // Co-Borrower Information
+    coborrower_full_name: loan.coBorrower ? 
+      formatFullName(loan.coBorrower.firstName, loan.coBorrower.lastName) : '',
+    coborrower_email: loan.coBorrower?.contacts?.email || '',
+    coborrower_address: formatAddress(loan.coBorrower?.currentAddress),
+    
+    // Property Information  
+    subject_property_address: formatAddress(loan.subjectPropertyAddress),
+    estimated_property_value_at_close: safeValue(loan.appraisalValue || loan.purchasePrice, 'currency'),
+    
+    // Loan Details
+    loan_term: safeValue(loan.term, 'number'),
+    interest_rate: safeValue(loan.noteRate, 'percent'),
+    lenderinvestor: loan.lender || '',
+    
+    // Dates (formatted as YYYY-MM-DD for HighLevel)
+    closing_date: safeValue(loan.dates?.closed, 'date'),
+    funding_date: safeValue(loan.dates?.funded, 'date'),
+    first_payment_date: safeValue(loan.dates?.firstPaymentDate, 'date'),
+    rate_lock_date: safeValue(loan.dates?.rateLocked, 'date'),
+    lock_expiration_date: safeValue(loan.dates?.lockExpiration, 'date'),
+    
+    // Financial Information
+    monthly_pi_payment: safeValue(loan.proposedHousingExpense?.firstMortgage, 'currency'),
+    pmimip_amount: safeValue(loan.proposedHousingExpense?.mortgageInsurance, 'currency'),
+    credit_score_at_closing: safeValue(loan.creditScore, 'number')
+  };
+}
+
 // ---------------- Core Business Logic ----------------
 async function upsertOpportunityFromPayload(payload) {
   const {
@@ -477,7 +577,7 @@ async function upsertOpportunityFromPayload(payload) {
   const customFieldsArray = buildCustomFields(customFields, loanId);
   if (customFieldsArray?.length) opportunityPayload.customFields = customFieldsArray;
 
-  console.log('🏗️ Upserting opportunity with payload:', JSON.stringify(opportunityPayload, null, 2));
+  console.log('🗞️ Upserting opportunity with payload:', JSON.stringify(opportunityPayload, null, 2));
 
   // Step 3: Try upsert, fallback to create (WITH RETRY LOGIC)
   try {
@@ -582,7 +682,7 @@ app.post('/api/trigger-poll', requireApiKey, async (req, res) => {
         
         const payload = {
           loanId: loan.loanId,
-          name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+          name: `Loan #${loan.loanNumber} — ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
           value: parseInt(loan.loanAmount) || 100000,
           
           // Extract from nested borrower object
@@ -591,16 +691,8 @@ app.post('/api/trigger-poll', requireApiKey, async (req, res) => {
           contactLastName: loan.borrower?.lastName,
           contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
           
-          customFields: {
-  loan_status: loan.loanStatus?.name,
-  program: loan.program,
-  apr: loan.apr || loan.APR,
-  property_type: loan.propertyType?.name || loan.property_type?.name,
-  occupancy: loan.occupancy?.name,
-  purpose: loan.purpose?.name,
-  loan_type: loan.loanType?.name
-
-          }
+          // *** ENHANCED CUSTOM FIELDS MAPPING ***
+          customFields: mapLoanToCustomFields(loan)
         };
         
         try {
@@ -659,6 +751,7 @@ app.post('/api/test-alert', requireApiKey, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // ---------------- Manual Resync Route (for recovery) ----------------
 app.post('/api/v1/resync-all', requireApiKey, async (req, res) => {
   try {
@@ -731,7 +824,7 @@ app.post('/api/v1/resync-all', requireApiKey, async (req, res) => {
           
           const payload = {
             loanId: loan.loanId,
-            name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+            name: `Loan #${loan.loanNumber} — ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
             value: parseInt(loan.loanAmount) || 100000,
             contactEmail: loan.borrower?.contacts?.email,
             contactFirstName: loan.borrower?.firstName,
@@ -739,14 +832,10 @@ app.post('/api/v1/resync-all', requireApiKey, async (req, res) => {
             contactPhone: loan.borrower?.contacts?.mobilePhone || 
                         loan.borrower?.contacts?.homePhone || 
                         loan.borrower?.contacts?.workPhone,
+            
+            // *** ENHANCED CUSTOM FIELDS MAPPING WITH RESYNC TIMESTAMP ***
             customFields: {
-              loan_status: loan.loanStatus?.name,
-              program: loan.program,
-              apr: loan.apr || loan.APR,
-              property_type: loan.propertyType?.name,
-              occupancy: loan.occupancy?.name,
-              purpose: loan.purpose?.name,
-              loan_type: loan.loanType?.name,
+              ...mapLoanToCustomFields(loan),
               resync_timestamp: new Date().toISOString()
             }
           };
@@ -874,7 +963,7 @@ async function pollLendingDox() {
         
         const payload = {
           loanId: loan.loanId,
-          name: `Loan #${loan.loanNumber} – ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
+          name: `Loan #${loan.loanNumber} — ${loan.borrower?.firstName} ${loan.borrower?.lastName}`.trim(),
           value: parseInt(loan.loanAmount) || 100000,
           
           // Extract from nested borrower object
@@ -883,15 +972,8 @@ async function pollLendingDox() {
           contactLastName: loan.borrower?.lastName,
           contactPhone: loan.borrower?.contacts?.mobilePhone || loan.borrower?.contacts?.homePhone || loan.borrower?.contacts?.workPhone,
           
-          customFields: {
-            loan_status: loan.loanStatus?.name,
-            program: loan.program,
-            apr: loan.apr || loan.APR,
-            property_type: loan.propertyType?.name || loan.property_type?.name,
-            occupancy: loan.occupancy?.name,
-            purpose: loan.purpose?.name,
-            loan_type: loan.loanType?.name
-          }
+          // *** ENHANCED CUSTOM FIELDS MAPPING ***
+          customFields: mapLoanToCustomFields(loan)
         };
         
         try {
@@ -915,7 +997,6 @@ async function pollLendingDox() {
 }
 
 // Only start polling if enabled
-// Only start polling if enabled
 if (process.env.ENABLE_POLL === 'true') {
   // Wait 5 seconds for database to initialize
   setTimeout(() => {
@@ -930,6 +1011,7 @@ app.get('/auth/callback', (req, res) => {
   const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
   res.redirect(`/oauth/callback${queryString}`);
 });
+
 app.get('/debug/tokens', requireApiKey, async (req, res) => {
   try {
     const token = await getValidAccessToken();
@@ -972,16 +1054,16 @@ app.get('/oauth/callback', async (req, res) => {
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
     
-const { access_token, refresh_token } = tokenResponse.data;
-// Save tokens to database using our new system
-const { saveTokens } = require('./tokens');
-await saveTokens(access_token, refresh_token, 3600); // 1 hour default    
+    const { access_token, refresh_token } = tokenResponse.data;
+    // Save tokens to database using our new system
+    const { saveTokens } = require('./tokens');
+    await saveTokens(access_token, refresh_token, 3600); // 1 hour default    
     console.log('✅ OAuth Success');
     
     // Only log tokens in development
-if (process.env.NODE_ENV !== 'production') {
-  console.log('Tokens saved to database successfully');
-}
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Tokens saved to database successfully');
+    }
     
     res.send(`
       <h1>OAuth Successful!</h1>
@@ -1018,7 +1100,9 @@ app.get('/health', async (req, res) => {
     locationId: GHL_LOCATION_ID,
     pollingEnabled: process.env.ENABLE_POLL === 'true',
     emailConfigured: !!transporter && !!process.env.ALERT_EMAIL_TO,
-    version: '1.0.0'
+    version: '1.0.0',
+    enhancedFieldMapping: true, // Indicates this version has enhanced field mapping
+    totalMappedFields: 23 // Total number of fields now being mapped
   });
 });
 
@@ -1034,18 +1118,20 @@ process.on('unhandledRejection', reason => {
 });
 
 // ---------------- Start Server ----------------
-// ---------------- Start Server ----------------
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
-  console.log(`📍 Location ID: ${GHL_LOCATION_ID}`);
-  console.log(`🔑 Token System: Database Storage`);
+  console.log(`🔍 Location ID: ${GHL_LOCATION_ID}`);
+  console.log(`🔐 Token System: Database Storage`);
   console.log(`🔄 Polling Enabled: ${process.env.ENABLE_POLL === 'true'}`);
   if (process.env.ENABLE_POLL === 'true') {
     console.log(`🔄 Polling Interval: ${POLL_MS}ms`);
   }
   console.log(`🔒 API Key Protection: ${!!process.env.INTERNAL_API_KEY}`);
   console.log(`📧 Email Alerts: ${!!transporter && !!process.env.ALERT_EMAIL_TO ? 'Enabled' : 'Disabled'}`);
-});// Graceful shutdown handling
+  console.log(`🗺️ Enhanced Field Mapping: ✅ (23 total fields)`);
+});
+
+// Graceful shutdown handling
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM received, shutting down gracefully...');
   server.close(() => {
@@ -1061,4 +1147,22 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
-// - change for change 3
+
+// Enhanced field mapping changelog note
+console.log(`
+🎉 ENHANCED FIELD MAPPING ACTIVE 🎉
+=======================================
+✅ Original Fields: 7
+✅ New Fields Added: 16  
+✅ Total Fields: 23
+
+New Field Categories:
+📝 Co-Borrower Information (3 fields)
+🏠 Property Information (2 fields)  
+💰 Loan Details (3 fields)
+📅 Important Dates (5 fields)
+💵 Financial Information (3 fields)
+
+All fields from CSV mapping are now implemented!
+=======================================
+`);
